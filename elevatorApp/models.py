@@ -19,6 +19,7 @@ class Elevator(models.Model):
 class ElevatorRequest(models.Model):
     elevator = models.ForeignKey(Elevator, on_delete=models.CASCADE)
     floor = models.PositiveIntegerField()
+    disabled = models.BooleanField(default=False)
 
     def __str__(self):
         return f"Elevator {self.elevator_id} - Floor {self.floor}"

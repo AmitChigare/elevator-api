@@ -117,6 +117,12 @@ class ElevatorViewSet(viewsets.ModelViewSet):
                     {"error": "Invalid floor provided."}, status=HTTP_400_BAD_REQUEST
                 )
 
+            if elevator.current_floor == floor:
+                return Response(
+                    {"message": "Elevator on the same floor, Opening the door..."},
+                    status=HTTP_200_OK,
+                )
+
             if elevator.door_open:
                 # Close the door before moving to the floor
                 elevator.door_open = False
@@ -146,12 +152,15 @@ class ElevatorViewSet(viewsets.ModelViewSet):
                     elevator.direction = "up"
                     while elevator.current_floor < floor:
                         elevator.current_floor += 1
-                        # time.sleep(1)  # Simulating the elevator moving floors
+                        time.sleep(1)  # Simulating the elevator moving floors
                 else:
                     elevator.direction = "down"
                     while elevator.current_floor > floor:
                         elevator.current_floor -= 1
-                        # time.sleep(1)  # Simulating the elevator moving floors
+                        time.sleep(1)  # Simulating the elevator moving floors
+
+                # Create a new ElevatorRequest for the current floor
+                self.save_user_request(pk, elevator.current_floor)
 
                 # Open the door after reaching the target floor
                 elevator.door_open = True
@@ -188,6 +197,14 @@ class ElevatorViewSet(viewsets.ModelViewSet):
             )
 
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+
+from .models import Elevator, ElevatorRequest
+from .serializers import ElevatorSerializer
+
+
 class ElevatorRequestView(APIView):
     def post(self, request, elevator_id):
         try:
@@ -197,45 +214,142 @@ class ElevatorRequestView(APIView):
                     {
                         "message": "Elevator is under maintenance. Cannot process request."
                     },
-                    status=HTTP_200_OK,
+                    status=status.HTTP_200_OK,
                 )
 
             floor = request.data.get("floor")
             if floor is None or not isinstance(floor, int):
                 return Response(
-                    {"error": "Invalid floor provided."}, status=HTTP_400_BAD_REQUEST
+                    {"error": "Invalid floor provided."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             current_floor = elevator.current_floor
 
             if current_floor == floor:
                 elevator.door_open = True
+                elevator.save()
                 return Response(
                     {"message": f"Elevator on current floor. Opening the Doors..."},
-                    status=HTTP_200_OK,
+                    status=status.HTTP_200_OK,
                 )
 
-            elevator_request = ElevatorRequest(elevator=elevator, floor=floor)
-            elevator_request.save()
-            elevator.current_floor = floor
-
-            # Closing the door if the door is open
-            if elevator.door_open:
-                elevator.door_open = False
-            # Start the elevator if its not already running
+            # Start the elevator if it's not already running
             if elevator.status != "running":
                 elevator.status = "running"
+                elevator.save()
 
-            elevator.save()
+            # Check if there are any pending requests
+            pending_requests = ElevatorRequest.objects.filter(
+                elevator=elevator, disabled=False
+            ).order_by("floor")
+            if pending_requests:
+                next_floor = pending_requests[0].floor
+
+                while True:
+                    # Move the elevator towards the next floor
+                    if elevator.direction == "up":
+                        elevator.current_floor += 1
+                    else:
+                        elevator.current_floor -= 1
+                    elevator.save()
+
+                    # Simulate the elevator moving floors
+                    time.sleep(1)
+
+                    # Check if the elevator has reached the next floor
+                    if elevator.current_floor == next_floor:
+                        # Open the door at the destination floor
+                        elevator.door_open = True
+                        elevator.save()
+
+                        # Disable the current pending request
+                        pending_requests[0].disabled = True
+                        pending_requests[0].save()
+
+                        # Close the door after a short delay (simulating user interaction)
+                        time.sleep(2)
+                        elevator.door_open = False
+                        elevator.save()
+
+                        # Remove the completed request from the pending requests
+                        pending_requests = ElevatorRequest.objects.filter(
+                            elevator=elevator, disabled=False
+                        ).order_by("floor")
+
+                        # If there are no more pending requests, stop the elevator
+                        if not pending_requests:
+                            elevator.status = "idle"
+                            elevator.save()
+                            break
+
+                        # Otherwise, update the next destination floor
+                        next_floor = pending_requests[0].floor
+
+                        # Continue to the next iteration to move towards the new destination floor
+
+                return Response(
+                    {
+                        "message": f"Elevator {elevator_id} has arrived at floor {next_floor}. Door is open. Elevator is stopped."
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            else:
+                # Elevator is idle, move directly to the requested floor
+                # Simulate the elevator movement
+                if floor > elevator.current_floor:
+                    elevator.direction = "up"
+                    while elevator.current_floor < floor:
+                        elevator.current_floor += 1
+                        elevator.save()
+                        time.sleep(1)  # Simulating the elevator moving floors
+                else:
+                    elevator.direction = "down"
+                    while elevator.current_floor > floor:
+                        elevator.current_floor -= 1
+                        elevator.save()
+                        time.sleep(1)  # Simulating the elevator moving floors
+
+                # Create a new ElevatorRequest for the current floor
+                elevator_request = ElevatorRequest(
+                    elevator=elevator, floor=elevator.current_floor
+                )
+                elevator_request.save()
+
+                # Open the door after reaching the target floor
+                elevator.door_open = True
+                elevator.save()
+
+                # Stop the elevator if there are no more pending requests
+                elevator.status = "idle"
+                elevator.save()
+
+                return Response(
+                    {
+                        "message": f"Elevator {elevator_id} has arrived at floor {floor}. Door is open. Elevator is stopped."
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            # Elevator has reached the desired floor, update the next floor properly
+            next_floor = None
+            pending_requests = ElevatorRequest.objects.filter(
+                elevator=elevator, disabled=False
+            ).order_by("floor")
+            if pending_requests:
+                next_floor = pending_requests[0].floor
+
             return Response(
                 {
-                    "message": f"Request added to Elevator {elevator_id} queue. Current on floor: {current_floor}"
+                    "message": f"Elevator {elevator_id} has arrived at floor {current_floor}. Door is open. Elevator is stopped.",
+                    "next_floor": next_floor,
                 },
-                status=HTTP_201_CREATED,
+                status=status.HTTP_200_OK,
             )
+
         except Elevator.DoesNotExist:
             return Response(
-                {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
+                {"error": "Elevator not found."}, status=status.HTTP_400_BAD_REQUEST
             )
 
 
