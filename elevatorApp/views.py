@@ -40,59 +40,172 @@ class ElevatorViewSet(viewsets.ModelViewSet):
                 {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
             )
 
-    @action(detail=True, methods=["post"])
-    def move_to_floor(self, request, pk=None):
+    def get_next_destination_floor(self, elevator):
+        """
+        Get the next destination floor for the given elevator based on user requests.
+        """
+        # Fetch all pending requests for the elevator
+        pending_requests = ElevatorRequest.objects.filter(elevator=elevator).order_by(
+            "floor"
+        )
+
+        if not pending_requests:
+            return None
+
+        # Get the next destination floor based on the elevator's current direction
+        if elevator.direction == "up":
+            next_floor = min(pending_requests, key=lambda req: req.floor).floor
+        elif elevator.direction == "down":
+            next_floor = max(pending_requests, key=lambda req: req.floor).floor
+        else:
+            # If the elevator is idle, set the next floor to the closest floor in any direction
+            up_floors = [
+                req.floor
+                for req in pending_requests
+                if req.floor >= elevator.current_floor
+            ]
+            down_floors = [
+                req.floor
+                for req in pending_requests
+                if req.floor <= elevator.current_floor
+            ]
+
+            if up_floors and down_floors:
+                next_floor = min(
+                    up_floors + down_floors,
+                    key=lambda floor: abs(elevator.current_floor - floor),
+                )
+            elif up_floors:
+                next_floor = min(up_floors)
+            elif down_floors:
+                next_floor = max(down_floors)
+            else:
+                return None
+
+        return next_floor
+
+    def save_user_request(self, elevator_id, floor):
+        """
+        Save user request to the list of requests for the given elevator.
+        """
         try:
-            target_floor = request.data.get("target_floor")
-            if target_floor is None or not isinstance(target_floor, int):
+            elevator = Elevator.objects.get(pk=elevator_id)
+            elevator_request = ElevatorRequest(elevator=elevator, floor=floor)
+            if elevator_request.DoesNotExist:
+                elevator.create(elevator=elevator, floor=floor)
+            else:
+                elevator_request.save()
+        except Elevator.DoesNotExist:
+            pass
+
+    #######################OLD FUNCTIONS################
+    @action(detail=True, methods=["post"])
+    def call_elevator(self, request, pk=None):
+        try:
+            elevator = self.get_object()
+            if not elevator.operational:
                 return Response(
-                    {"error": "Invalid target_floor provided."},
-                    status=HTTP_400_BAD_REQUEST,
+                    {
+                        "message": "Elevator is under maintenance. Cannot process request."
+                    },
+                    status=HTTP_200_OK,
                 )
 
-            elevator = self.get_object()
-            elevator.door_open = False  # Close the door before moving
-            elevator.save()
-
-            # Simulating the elevator movement
-            if target_floor > elevator.current_floor:
-                elevator.direction = "up"
-                while elevator.current_floor < target_floor:
-                    elevator.current_floor += 1
-                    # time.sleep(1)  # Simulating the elevator moving floors
-            else:
-                elevator.direction = "down"
-                while elevator.current_floor > target_floor:
-                    elevator.current_floor -= 1
-                    # time.sleep(1)  # Simulating the elevator moving floors
-
-            elevator.door_open = True  # Open the door after reaching the target floor
-            elevator.save()
-
-            return Response(
-                {
-                    "message": f"Elevator {pk} has arrived at floor {target_floor}. Door is open."
-                },
-                status=HTTP_200_OK,
-            )
-        except Elevator.DoesNotExist:
-            return Response(
-                {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
-            )
-
-    # ... previous viewset code ...
-
-
-class ElevatorRequestView(APIView):
-    def post(self, request, elevator_id):
-        try:
             floor = request.data.get("floor")
             if floor is None or not isinstance(floor, int):
                 return Response(
                     {"error": "Invalid floor provided."}, status=HTTP_400_BAD_REQUEST
                 )
 
+            if elevator.door_open:
+                # Close the door before moving to the floor
+                elevator.door_open = False
+                elevator.save()
+
+            # Start the elevator if it's not already running
+            if elevator.status != "running":
+                elevator.status = "running"
+                elevator.save()
+
+            # Check if there are any pending requests
+            next_floor = self.get_next_destination_floor(elevator)
+
+            if next_floor is not None:
+                # Elevator is already running, add the new floor to the pending requests
+                self.save_user_request(pk, floor)
+                return Response(
+                    {
+                        "message": f"Elevator {pk} has a pending request. The next destination floor is {next_floor}."
+                    },
+                    status=HTTP_200_OK,
+                )
+            else:
+                # Elevator is idle, move directly to the requested floor
+                # Simulate the elevator movement
+                if floor > elevator.current_floor:
+                    elevator.direction = "up"
+                    while elevator.current_floor < floor:
+                        elevator.current_floor += 1
+                        # time.sleep(1)  # Simulating the elevator moving floors
+                else:
+                    elevator.direction = "down"
+                    while elevator.current_floor > floor:
+                        elevator.current_floor -= 1
+                        # time.sleep(1)  # Simulating the elevator moving floors
+
+                # Open the door after reaching the target floor
+                elevator.door_open = True
+                elevator.save()
+
+                # Stop the elevator
+                elevator.status = "idle"
+                elevator.save()
+
+                return Response(
+                    {
+                        "message": f"Elevator {pk} has arrived at floor {floor}. Door is open. Elevator is stopped."
+                    },
+                    status=HTTP_200_OK,
+                )
+
+        except Elevator.DoesNotExist:
+            return Response(
+                {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=["get"])
+    def get_pending_requests(self, request, pk=None):
+        try:
+            elevator = Elevator.objects.get(pk=pk)
+            pending_requests = ElevatorRequest.objects.filter(
+                elevator=elevator
+            ).order_by("floor")
+            serializer = ElevatorRequestSerializer(pending_requests, many=True)
+            return Response(serializer.data, status=HTTP_200_OK)
+        except Elevator.DoesNotExist:
+            return Response(
+                {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
+            )
+
+
+class ElevatorRequestView(APIView):
+    def post(self, request, elevator_id):
+        try:
             elevator = Elevator.objects.get(pk=elevator_id)
+            if not elevator.operational:
+                return Response(
+                    {
+                        "message": "Elevator is under maintenance. Cannot process request."
+                    },
+                    status=HTTP_200_OK,
+                )
+
+            floor = request.data.get("floor")
+            if floor is None or not isinstance(floor, int):
+                return Response(
+                    {"error": "Invalid floor provided."}, status=HTTP_400_BAD_REQUEST
+                )
+
             current_floor = elevator.current_floor
 
             if current_floor == floor:
