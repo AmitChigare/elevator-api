@@ -99,80 +99,6 @@ class ElevatorViewSet(viewsets.ModelViewSet):
             pass
 
     #######################OLD FUNCTIONS################
-    @action(detail=True, methods=["post"])
-    def call_elevator(self, request, pk=None):
-        try:
-            elevator = self.get_object()
-            if not elevator.operational:
-                return Response(
-                    {
-                        "message": "Elevator is under maintenance. Cannot process request."
-                    },
-                    status=HTTP_200_OK,
-                )
-
-            floor = request.data.get("floor")
-            if floor is None or not isinstance(floor, int):
-                return Response(
-                    {"error": "Invalid floor provided."}, status=HTTP_400_BAD_REQUEST
-                )
-
-            if elevator.door_open:
-                # Close the door before moving to the floor
-                elevator.door_open = False
-                elevator.save()
-
-            # Start the elevator if it's not already running
-            if elevator.status != "running":
-                elevator.status = "running"
-                elevator.save()
-
-            # Check if there are any pending requests
-            next_floor = self.get_next_destination_floor(elevator)
-
-            if next_floor is not None:
-                # Elevator is already running, add the new floor to the pending requests
-                self.save_user_request(pk, floor)
-                return Response(
-                    {
-                        "message": f"Elevator {pk} has a pending request. The next destination floor is {next_floor}."
-                    },
-                    status=HTTP_200_OK,
-                )
-            else:
-                # Elevator is idle, move directly to the requested floor
-                # Simulate the elevator movement
-                if floor > elevator.current_floor:
-                    elevator.direction = "up"
-                    while elevator.current_floor < floor:
-                        elevator.current_floor += 1
-                        # time.sleep(1)  # Simulating the elevator moving floors
-                else:
-                    elevator.direction = "down"
-                    while elevator.current_floor > floor:
-                        elevator.current_floor -= 1
-                        # time.sleep(1)  # Simulating the elevator moving floors
-
-                # Open the door after reaching the target floor
-                elevator.door_open = True
-                elevator.save()
-
-                # Stop the elevator
-                elevator.status = "idle"
-                elevator.save()
-
-                return Response(
-                    {
-                        "message": f"Elevator {pk} has arrived at floor {floor}. Door is open. Elevator is stopped."
-                    },
-                    status=HTTP_200_OK,
-                )
-
-        except Elevator.DoesNotExist:
-            return Response(
-                {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
-            )
-
     @action(detail=True, methods=["get"])
     def get_pending_requests(self, request, pk=None):
         try:
@@ -194,9 +120,7 @@ class ElevatorRequestView(APIView):
             elevator = Elevator.objects.get(pk=elevator_id)
             if not elevator.operational:
                 return Response(
-                    {
-                        "message": "Elevator is under maintenance. Cannot process request."
-                    },
+                    {"message": "Elevator is under maintenance. Cannot process request."},
                     status=HTTP_200_OK,
                 )
 
@@ -210,6 +134,7 @@ class ElevatorRequestView(APIView):
 
             if current_floor == floor:
                 elevator.door_open = True
+                elevator.status = "idle"
                 elevator.save()
                 return Response(
                     {"message": f"Elevator on current floor. Opening the Doors..."},
@@ -218,13 +143,16 @@ class ElevatorRequestView(APIView):
 
             # Start the elevator if it's not already running
             if elevator.status != "running":
+                all_prs = ElevatorRequest.objects.filter(elevator=elevator, disabled=False)
+                for pr in all_prs:
+                    pr.disabled = True
+                    pr.save()
+
                 elevator.status = "running"
                 elevator.save()
 
             # Check if there are any pending requests
-            pending_requests = ElevatorRequest.objects.filter(
-                elevator=elevator
-            ).order_by("floor")
+            pending_requests = ElevatorRequest.objects.filter(elevator=elevator, disabled=False).order_by("floor")
             if pending_requests:
                 # Elevator is already running, add the new floor to the pending requests
                 elevator_request = ElevatorRequest(elevator=elevator, floor=floor)
@@ -238,23 +166,23 @@ class ElevatorRequestView(APIView):
             else:
                 # Elevator is idle, move directly to the requested floor
                 # Simulate the elevator movement
-                if floor > elevator.current_floor:
+                if floor > current_floor:
                     elevator.direction = "up"
-                    while elevator.current_floor < floor:
-                        elevator.current_floor += 1
+                    while current_floor < floor:
+                        current_floor += 1
+                        elevator.current_floor = current_floor
                         elevator.save()
                         time.sleep(1)  # Simulating the elevator moving floors
                 else:
                     elevator.direction = "down"
-                    while elevator.current_floor > floor:
-                        elevator.current_floor -= 1
+                    while current_floor > floor:
+                        current_floor -= 1
+                        elevator.current_floor = current_floor
                         elevator.save()
                         time.sleep(1)  # Simulating the elevator moving floors
 
                 # Create a new ElevatorRequest for the current floor
-                elevator_request = ElevatorRequest(
-                    elevator=elevator, floor=elevator.current_floor
-                )
+                elevator_request = ElevatorRequest(elevator=elevator, floor=current_floor)
                 elevator_request.save()
 
                 # Open the door after reaching the target floor
@@ -265,9 +193,15 @@ class ElevatorRequestView(APIView):
                 elevator.status = "idle"
                 elevator.save()
 
+                # Disable the elevator requests for this floor
+                all_prs = ElevatorRequest.objects.filter(elevator=elevator, floor=current_floor)
+                for pr in all_prs:
+                    pr.disabled = True
+                    pr.save()
+
                 return Response(
                     {
-                        "message": f"Elevator {elevator_id} has arrived at floor {floor}. Door is open. Elevator is stopped."
+                        "message": f"Elevator {elevator_id} has arrived at floor {current_floor}. Door is open. Elevator is stopped."
                     },
                     status=HTTP_200_OK,
                 )
@@ -276,8 +210,7 @@ class ElevatorRequestView(APIView):
             return Response(
                 {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
             )
-
-
+            
 class ElevatorMaintenanceView(APIView):
     def post(self, request, elevator_id):
         try:
