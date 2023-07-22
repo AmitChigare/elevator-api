@@ -41,9 +41,8 @@ class ElevatorViewSet(viewsets.ModelViewSet):
             )
 
     def get_next_destination_floor(self, elevator):
-        """
-        Get the next destination floor for the given elevator based on user requests.
-        """
+        # Get the next destination floor for the given elevator based on user requests.
+
         # Fetch all pending requests for the elevator
         pending_requests = ElevatorRequest.objects.filter(elevator=elevator).order_by(
             "floor"
@@ -85,9 +84,7 @@ class ElevatorViewSet(viewsets.ModelViewSet):
         return next_floor
 
     def save_user_request(self, elevator_id, floor):
-        """
-        Save user request to the list of requests for the given elevator.
-        """
+        # Save user request to the list of requests for the given elevator.
         try:
             elevator = Elevator.objects.get(pk=elevator_id)
             elevator_request = ElevatorRequest(elevator=elevator, floor=floor)
@@ -98,7 +95,6 @@ class ElevatorViewSet(viewsets.ModelViewSet):
         except Elevator.DoesNotExist:
             pass
 
-    #######################OLD FUNCTIONS################
     @action(detail=True, methods=["get"])
     def get_pending_requests(self, request, pk=None):
         try:
@@ -120,7 +116,9 @@ class ElevatorRequestView(APIView):
             elevator = Elevator.objects.get(pk=elevator_id)
             if not elevator.operational:
                 return Response(
-                    {"message": "Elevator is under maintenance. Cannot process request."},
+                    {
+                        "message": "Elevator is under maintenance. Cannot process request."
+                    },
                     status=HTTP_200_OK,
                 )
 
@@ -143,16 +141,21 @@ class ElevatorRequestView(APIView):
 
             # Start the elevator if it's not already running
             if elevator.status != "running":
-                all_prs = ElevatorRequest.objects.filter(elevator=elevator, disabled=False)
+                all_prs = ElevatorRequest.objects.filter(
+                    elevator=elevator, disabled=False
+                )
                 for pr in all_prs:
                     pr.disabled = True
                     pr.save()
 
                 elevator.status = "running"
+                elevator.door_open = False
                 elevator.save()
 
             # Check if there are any pending requests
-            pending_requests = ElevatorRequest.objects.filter(elevator=elevator, disabled=False).order_by("floor")
+            pending_requests = ElevatorRequest.objects.filter(
+                elevator=elevator, disabled=False
+            ).order_by("floor")
             if pending_requests:
                 # Elevator is already running, add the new floor to the pending requests
                 elevator_request = ElevatorRequest(elevator=elevator, floor=floor)
@@ -182,7 +185,9 @@ class ElevatorRequestView(APIView):
                         time.sleep(1)  # Simulating the elevator moving floors
 
                 # Create a new ElevatorRequest for the current floor
-                elevator_request = ElevatorRequest(elevator=elevator, floor=current_floor)
+                elevator_request = ElevatorRequest(
+                    elevator=elevator, floor=current_floor
+                )
                 elevator_request.save()
 
                 # Open the door after reaching the target floor
@@ -194,7 +199,9 @@ class ElevatorRequestView(APIView):
                 elevator.save()
 
                 # Disable the elevator requests for this floor
-                all_prs = ElevatorRequest.objects.filter(elevator=elevator, floor=current_floor)
+                all_prs = ElevatorRequest.objects.filter(
+                    elevator=elevator, floor=current_floor
+                )
                 for pr in all_prs:
                     pr.disabled = True
                     pr.save()
@@ -210,7 +217,8 @@ class ElevatorRequestView(APIView):
             return Response(
                 {"error": "Elevator not found."}, status=HTTP_400_BAD_REQUEST
             )
-            
+
+
 class ElevatorMaintenanceView(APIView):
     def post(self, request, elevator_id):
         try:
